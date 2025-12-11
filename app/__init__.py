@@ -2,10 +2,19 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import *
 from config import Config
+from argon2 import *
+from cryptography.fernet import Fernet
+import logging
+import os
+from logging.handlers import *
 
 db = SQLAlchemy()
 # creates a new csrf object
 csrf = CSRFProtect()
+# argon2 password hasher
+ph = PasswordHasher()
+# this is for the bio encryption
+fernet = Fernet(Config.BIO_ENCRYPTION_KEY)
 
 def create_app():
     app = Flask(__name__)
@@ -30,8 +39,16 @@ def create_app():
         ]
 
         for user in users:
-            user = User(username=user["username"], password=user["password"], role=user["role"], bio=user["bio"])
-            db.session.add(user)
+            # peppers the password and hashes it (argon2 salts internally )
+            pepperedUserPassword = user["password"] + Config.PASSWORD_PEPPER
+            hashed_password = ph.hash(pepperedUserPassword)
+
+            #encrypts the bio so the database never stores it as plain text
+            encryptedBio = fernet.encrypt(user["bio"].encode("utf-8")).decode("utf-8")
+
+            seededUser = User(username=user["username"], password=hashed_password, role=user["role"], bio=encryptedBio)
+
+            db.session.add(seededUser)
             db.session.commit()
 
     #this function adds https security headers to helpe prevent clickjacking, mime sniffing, and xss vectors
@@ -47,5 +64,25 @@ def create_app():
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=()"
 
         return response
+
+    # Sets up logging only if no handlers already exists to avoid duplicates
+    if not app.logger.handlers:
+        logDir = "logs"
+
+        # checks that the logs directory exists
+        os.makedirs(logDir, exist_ok=True)
+        logFile = os.path.join(logDir, "registration.log")
+
+        # logs to a file which rotates when gets too big
+        fileHandler = RotatingFileHandler(logFile, maxBytes=1024 * 1024, backupCount=5)
+
+        # sets the format which is timestamp, level and message
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        fileHandler.setFormatter(formatter)
+
+        # adds this handler to the logger
+        app.logger.addHandler(fileHandler)
+        app.logger.setLevel(logging.INFO)
+
     return app
 

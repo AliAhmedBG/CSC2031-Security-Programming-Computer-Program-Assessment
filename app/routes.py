@@ -1,9 +1,13 @@
 import traceback
 import re
 from bleach.sanitizer import ALLOWED_TAGS
-from flask import request, render_template, redirect, url_for, session, Blueprint, flash, abort
+from flask import request, render_template, redirect, url_for, session, Blueprint, flash, abort, current_app
 from sqlalchemy import text
 from wtforms.validators import *
+from argon2 import *
+from argon2.exceptions import VerifyMismatchError
+from cryptography.fernet import Fernet
+from config import Config
 
 from app import db
 from app.models import User
@@ -17,6 +21,11 @@ ALLOWED_TAGS = ["b", "i", "u", "em", "strong", "a", "p", "ul", "ol", "li", "br"]
 ALLOWED_ATTRIBUTES = {"a": ["href", "title"]}
 # this variable holds the blacklist for passwords that cant be the following
 PASSWORD_BLACKLIST = {"Password123$", "Qwerty123!", "Adminadmin1@","weLcome123!"}
+
+# variables used for encryption later on in the file
+ph = PasswordHasher()
+fernet = Fernet(Config.BIO_ENCRYPTION_KEY)
+
 
 """helper function which checks password against all of the required rules and raises an error for each
 rule which is broken
@@ -57,10 +66,6 @@ def validate_password(password, username):
     if re.search(r"(.)\1\1", password):
         raise ValidationError("Password cannot contain 3 repeating character (aaa)")
 
-
-
-
-
 @main.route('/')
 def home():
     return render_template('home.html')
@@ -76,18 +81,31 @@ def login():
         password = form.password.data
 
         # user input treated as a paremeter instead of being merged into the sql string to prevent sql injection
-        user = User.query.filter_by(username=username, password=password).first()
+        user = User.query.filter_by(username=username).first()
 
         if user:
-            # resets the session so old ids arent reused
-            session.clear()
-            session['user'] = user.username
-            session['role'] = user.role
-            session['bio'] = user.bio
-            return redirect(url_for('main.dashboard'))
-        else:
-            flash('Login credentials are invalid, please try again')
-    # now also passes form so the fields and errors will render
+            try:
+                # checks if the password is correct
+                pepperedPassword = password + Config.PASSWORD_PEPPER
+                ph.verify(user.password, pepperedPassword)
+
+                # login continues since password check is correct
+                session.clear() # resets the ession so old ids arent reused
+                session['user'] = user.username
+                session['role'] = user.role
+                session['bio'] = user.bio
+
+                # logs successful logins
+                current_app.logger.info("login successful user=%s ip=%s", username, request.remote_addr)
+
+                return redirect(url_for('main.dashboard'))
+            except VerifyMismatchError:
+                pass
+
+        current_app.logger.warning("login failed user=%s ip=%s", username, request.remote_addr)
+
+        flash('Login credentials are invalid, please try again')
+        # now also passes form so the fields and errors will render
     return render_template('login.html', form=form)
 
 @main.route('/dashboard')
@@ -102,7 +120,16 @@ def dashboard():
             session.clear()
             return redirect(url_for('main.login'))
 
-        return render_template('dashboard.html', username=user.username, bio=user.bio)
+        # this try statement decrypts the biography before rendering it so the user can see it
+        try:
+            decryptedBio = fernet.decrypt(user.bio.encode("utf-8")).decode("utf-8")
+        except Exception:
+            #acts as a fall back for if something doesnt work
+            decryptedBio = user.bio
+
+        # this return statement passes the decrypted bio to the template
+        return render_template('dashboard.html', username=user.username, bio=decryptedBio)
+    # return to the main page if not logged in
     return redirect(url_for('main.login'))
 
 @main.route('/register', methods=['GET', 'POST'])
@@ -135,14 +162,22 @@ def register():
         # the default rose on registration is set to user
         role = 'user'
 
+        # hashing and peppering
+        pepperedPassword = password + Config.PASSWORD_PEPPER
+        hashedPassword = ph.hash(pepperedPassword)
+
+        encryptedBio = fernet.encrypt(safeBio.encode('utf-8'))
+
         # adds the new user using parameterised sql so the query cant be broken by user input or sql attacks
         # pick this or omr ma
         db.session.execute(text(
             "INSERT INTO user (username, password, role, bio) "
             "VALUES (:username, :password, :role, :bio)"),
-            {"username": username, "password": password, "role": role, "bio": safeBio,},)
+            {"username": username, "password": hashedPassword, "role": role, "bio": encryptedBio.decode('utf-8')})
 
         db.session.commit()
+
+        current_app.logger.info("registration successful user=%s ip=%s", username, request.remote_addr)
 
         # feedback message to user
         flash('Registration successful!')
@@ -153,6 +188,12 @@ def register():
 
 @main.route('/admin-panel')
 def admin():
+    # checks if the user is logged in is they have to be to access this page
+    if 'user' not in session:
+        # if user is not logged in send them to the login page
+        return redirect(url_for('main.login'))
+
+    # this runs if the user is logged in but does not have the admin role so it gives an error
     if session.get('role') != 'admin':
         stack = ''.join(traceback.format_stack(limit=25))
         abort(403, description=f"Access denied.\n\n--- STACK (demo) ---\n{stack}")
@@ -160,6 +201,12 @@ def admin():
 
 @main.route('/moderator')
 def moderator():
+    # checks if the user is logged in is they have to be to access this page
+    if 'user' not in session:
+        # if user is not logged in send them to the login page
+        return redirect(url_for('main.login'))
+
+    # this runs if the user is logged in but does not have the moderator role so it gives an error
     if session.get('role') != 'moderator':
         stack = ''.join(traceback.format_stack(limit=25))
         abort(403, description=f"Access denied.\n\n--- STACK (demo) ---\n{stack}")
@@ -167,6 +214,11 @@ def moderator():
 
 @main.route('/user-dashboard')
 def user_dashboard():
+    # checks if the user is logged in is they have to be to access this page
+    if 'user' not in session:
+        # if user is not logged in send them to the login page
+        return redirect(url_for('main.login'))
+
     if session.get('role') != 'user':
         stack = ''.join(traceback.format_stack(limit=25))
         abort(403, description=f"Access denied.\n\n--- STACK (demo) ---\n{stack}")
@@ -191,32 +243,46 @@ def change_password():
         newPassword = form.newPassword.data
 
         # uses orm to find user instead of making sql string by hand so username and currpassword are passed manually
-        user = User.query.filter_by(username=username, password=currPassword).first()
+        user = User.query.filter_by(username=username).first()
 
-        # checks that the current password must be valid for user
-        if not user:
-            flash('Password is invalid, please try again', category='error')
-            return render_template('change_password.html', form=form)
-
-        # checks that the new password is not the same as the old and flashes an error if it is
-        if newPassword == currPassword:
-            flash('Password must differ from each other', category='error')
-            return render_template('change_password.html', form=form)
-
-
+        #checks the current password
         try:
-            # runs the password policy checker and raises a validation error if it fails
+            ph.verify(user.password, currPassword + Config.PASSWORD_PEPPER)
+        except Exception:
+            # logs the failed password change attempt
+            current_app.logger.warning("password change failed user=%s ip=%s", username, request.remote_addr)
+
+            # flashes an error and reloads the page for the user to try again
+            flash("Entered password is invalid, try again", "error")
+            return render_template("change_password.html", form=form)
+
+        # makes sure the new password being set is not the same as the old password
+        try:
+            ph.verify(user.password, newPassword + Config.PASSWORD_PEPPER)
+            # after verifying, the two passwords are checked and if theyre the same the request is rejected
+            current_app.logger.warning("password is the same as current password user=%s ip=%s", username, request.remote_addr)
+
+            flash("Entered password cannot be the same as the old password", "error")
+            return render_template("change_password.html", form=form)
+
+        except Exception:
+            # if new password is different then dont reject
+            # CHECK
+            pass
+
+        # validates password complexity
+        try:
             validate_password(newPassword, username)
-
         except ValidationError as e:
-            # show the user the policy error and keep them on the change password page
-            flash(str(e), category='error')
-            return render_template('change_password.html', form=form)
+            flash(str(e), "error")
+            return render_template("change_password.html", form=form)
 
-        # updates password using orm so the query becomes parameterised making it harder to break
-        #test
-        user.password = newPassword
+        # rehashes the new password
+        user.password = ph.hash(newPassword + Config.PASSWORD_PEPPER)
         db.session.commit()
+
+        # logs successful password change
+        current_app.logger.info("password change successful user=%s ip=%s", username, request.remote_addr)
 
         # flashes a success messages and redirects the user
         flash('Password updated successfully', category='success')
@@ -229,6 +295,10 @@ def change_password():
 Get is theres as a fallback"""
 @main.route('/logout', methods=['GET', 'POST'])
 def logout():
+    # logs the logout event if there was a user
+    username = session.get('user')
+    current_app.logger.info("logout successful user=%s ip=%s", username, request.remote_addr)
+
     #clears out the session so the user gets logged out
     session.clear()
     return redirect(url_for('main.login'))
