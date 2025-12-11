@@ -56,7 +56,7 @@ def create_app():
     def security_headers(response):
         # browser wont load page inside an iframe
         response.headers["X-Frame-Options"] = "DENY"
-        # stops malicious file uplads and downloads being interpreted as scropts
+        # stops malicious file uploads and downloads being interpreted as scropts
         response.headers["X-Content-Type-Options"] = "nosniff"
         # makes it so sensitive urls arent leaked to external sites
         response.headers["Referrer-Policy"] = "no-referrer"
