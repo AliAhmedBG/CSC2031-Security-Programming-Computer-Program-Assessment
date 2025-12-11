@@ -13,7 +13,9 @@
 {% endwith %}
 
 <p>This is your dashboard.</p>
-<p><b>Bio:</b> {{bio}}</p>
+<!--Bio already sanatised wit bleach so safe to render as html-->
+<p><b>Bio:</b> {{ bio|safe }}</p>
+
 
 <button id="greet-btn" class="btn btn-success" data-username="{{ username }}">
     Greet Me

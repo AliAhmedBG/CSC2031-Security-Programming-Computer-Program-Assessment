@@ -12,10 +12,3 @@ class User(db.Model):
         self.password = password
         self.role = role
         self.bio = bio
-
-
-
-
-
-
-

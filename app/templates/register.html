@@ -2,10 +2,37 @@
 {% block title %}Register{% endblock %}
 {% block content %}
 <h1>Register</h1>
+
 <form method="POST" novalidate>
-  Username: <input type="text" name="username"><br>
-  Password: <input type="password" name="password"><br>
-  Biography: <input type="text" name="bio"><br>
-  <input type="submit" value="Register">
+  <!--adds csrf to the register page-->
+  {{ form.csrf_token }}
+
+  <!--adds email and password fields along with the submit button-->
+  <p>
+    {{ form.userName.label }}<br> {{ form.userName }}
+    {% for error in form.userName.errors %}
+            <br><span style="color:red;">{{ error }}</span>
+        {% endfor %}
+  </p>
+
+  <p>
+    {{ form.password.label }}<br> {{ form.password }}
+    {% for error in form.password.errors %}
+            <br><span style="color:red;">{{ error }}</span>
+        {% endfor %}
+  </p>
+
+  <p>
+    {{ form.bio.label }}<br>{{ form.bio }}
+    {% for error in form.bio.errors %}
+            <br><span style="color:red;">{{ error }}</span>
+        {% endfor %}
+  </p>
+
+  <p>{{ form.submit() }}</p>
 </form>
 {% endblock %}
+
+
+
+

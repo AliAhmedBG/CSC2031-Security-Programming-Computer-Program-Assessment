@@ -13,9 +13,26 @@
 {% endwith %}
 
 <form method="POST" novalidate>
-  Username: <input type="text" name="username"><br>
-  Password: <input type="password" name="password"><br>
-  <input type="submit" value="Login">
+  <!--Adds csrf protection to the login page-->
+  {{ form.csrf_token }}
+
+  <!--adds the email and password field along with the submit button to the page-->
+  <p>
+    {{ form.username.label }}<br> {{ form.username }}
+    <!-- show validation errors under each field-->
+    {% for error in form.username.errors %}
+        <br><span style="color:red;">{{ error }}</span>
+    {% endfor %}
+  </p>
+
+  <p>
+    {{ form.password.label }}<br> {{ form.password }}
+    {% for error in form.password.errors %}
+        <br><span style="color:red;">{{ error }}</span>
+    {% endfor %}
+  </p>
+
+  <p>{{ form.submit() }}</p>
 </form>
 {% endblock %}
 

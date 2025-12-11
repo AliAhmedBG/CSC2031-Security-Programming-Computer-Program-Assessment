@@ -1,14 +1,19 @@
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
+from flask_wtf import *
 from config import Config
 
 db = SQLAlchemy()
+# creates a new csrf object
+csrf = CSRFProtect()
 
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
     db.init_app(app)
+    #ednables csrf for this app
+    csrf.init_app(app)
 
     from .routes import main
     app.register_blueprint(main)
@@ -29,5 +34,18 @@ def create_app():
             db.session.add(user)
             db.session.commit()
 
+    #this function adds https security headers to helpe prevent clickjacking, mime sniffing, and xss vectors
+    @app.after_request
+    def security_headers(response):
+        # browser wont load page inside an iframe
+        response.headers["X-Frame-Options"] = "DENY"
+        # stops malicious file uplads and downloads being interpreted as scropts
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        # makes it so sensitive urls arent leaked to external sites
+        response.headers["Referrer-Policy"] = "no-referrer"
+        # limits access to sensors and browser APIs
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=()"
+
+        return response
     return app
 
